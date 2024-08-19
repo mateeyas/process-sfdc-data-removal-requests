@@ -1,5 +1,14 @@
+# Build files
 /dist
 /build
+*.spec
+
+# Output files
 /exports
 /results
+
+# Configuration files
 *.ini
+
+# Virtual environment directory
+.venv/

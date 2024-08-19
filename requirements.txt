@@ -1,0 +1,5 @@
+InquirerPy
+simple-salesforce
+numpy
+pandas
+configparser
