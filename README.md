@@ -59,7 +59,7 @@ If you prefer to distribute or run the tool as an executable file, you can build
 2. **Build the Executable**: Run the following command to package the script into an executable:
 
    ```bash
-   pyinstaller --onefile --name "data-removal-tool-0.2" --icon=rocket.ico process-sfdc-data-removal-requests.py
+   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico process-sfdc-data-removal-requests.py
    ```
 
    This will create a single executable file (`data-removal-tool-0.2.exe`) in the `dist` directory.
@@ -101,15 +101,23 @@ Matthias Ragus ([matt@tala.dev](mailto:matt@tala.dev))
 
 ## Version History
 
-* 0.2
-    * Added a simple user interface.
-    * Improved the error handling.
-    * Fixed the missing SFDC client initialization in the deletion task when the other tasks are skipped.
-    * May contain bugs.
+- 0.3
 
-* 0.1
-    * Initial release.
-    * May contain bugs.
+  - Fixed the missing SFDC config parameter passing.
+  - Added ASCII art.
+  - Fixed emoji encoding issues.
+
+- 0.2
+
+  - Added a simple user interface.
+  - Improved the error handling.
+  - Fixed the missing SFDC client initialization in the deletion task when the other tasks are skipped.
+  - May contain bugs.
+
+- 0.1
+
+  - Initial release.
+  - May contain bugs.
 
 ## License
 
