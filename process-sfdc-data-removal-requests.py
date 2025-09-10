@@ -121,62 +121,142 @@ def main():
         input("Press Enter to exit...")
 
 
+def find_column_case_insensitive(df, target_column):
+    """
+    Find a column name in the DataFrame using case-insensitive matching.
+    Returns the actual column name if found, otherwise returns None.
+    """
+    target_lower = target_column.lower()
+    for col in df.columns:
+        if col.lower() == target_lower:
+            return col
+    return None
+
+
+def open_file_dialog_focused():
+    """
+    Opens a file dialog with proper focus handling to prevent it from opening behind other windows.
+    Returns the selected file path or empty string if no file is selected.
+    """
+    root = tk.Tk()
+    root.withdraw()  # Hide the main window
+    root.attributes("-topmost", True)  # Keep on top
+    root.lift()  # Bring to front
+    root.focus_force()  # Force focus
+    file_path = filedialog.askopenfilename(parent=root)
+    root.destroy()  # Clean up
+    return file_path
+
+
 def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     print("Starting to process a list of OneTrust requests...")
 
     # Load requests
-    root = tk.Tk()
-    root.withdraw()
     res_2 = input("XLSX (x) or CSV (c)? ")
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.askopenfilename()
+    file_path = open_file_dialog_focused()
 
     # Handle case where no file is selected
     if not file_path:
         print("No file selected. Returning to the main menu...")
         return
 
-    # Define datatypes for important columns
-    dtype_dict = {
-        "Email": str,
-        "Workflows": str,
-        "Task Assignee - Subtask": str,
-        "GDPR__c": float,
-        "GDPR_Account__c": float,
-        "HasOptedOutOfEmail": float,
-        "Marketing_Status__c": str,
-    }
-
     try:
+        # First load without dtype to get the actual column names
+        if res_2 == "x":
+            df_temp = pd.read_excel(file_path, nrows=0)  # Just get headers
+        elif res_2 == "c":
+            df_temp = pd.read_csv(file_path, nrows=0)  # Just get headers
+        else:
+            print("Invalid input. Returning to the main menu...")
+            return
+
+        # Create dtype_dict with actual column names (case-insensitive matching)
+        desired_dtypes = {
+            "Email": str,
+            "Workflows": str,
+            "Task Assignee - Subtask": str,
+            "Request Ref ID": str,
+            "Task Name - Subtask": str,
+            "Stage": str,
+            "Subtask Status - Subtask": str,
+            "Task Required - Subtask": str,
+            "Task Due Date - Subtask": str,
+            "Task Reminder Date - Subtask": str,
+            "Task Assigned Date - Subtask": str,
+            "First Name": str,
+            "Last Name": str,
+            "Request Type": str,
+            "Due Date": str,
+            "Approver": str,
+            "Date Submitted": str,
+            "Organization": str,
+            "Task Resolution - Subtask": str,
+            "Subtask Created Stage - Subtask": str,
+            "Current Request Stage - Subtask": str,
+        }
+
+        # Map desired column names to actual column names
+        dtype_dict = {}
+        for desired_col, dtype in desired_dtypes.items():
+            actual_col = find_column_case_insensitive(df_temp, desired_col)
+            if actual_col:
+                dtype_dict[actual_col] = dtype
+
+        # Now load the full file with proper dtypes
         if res_2 == "x":
             df_requests = pd.read_excel(file_path, dtype=dtype_dict)
         elif res_2 == "c":
             df_requests = pd.read_csv(file_path, dtype=dtype_dict)
-        else:
-            print("Invalid input. Returning to the main menu...")
-            return
+
     except Exception as e:
         print(f"Error loading the file: {e}. Returning to the main menu...")
         return
 
     print(f"{df_requests.shape[0]} requests loaded.")
 
+    # Find column names case-insensitively
+    task_assignee_col = find_column_case_insensitive(
+        df_requests, "Task Assignee - Subtask"
+    )
+    workflows_col = find_column_case_insensitive(df_requests, "Workflows")
+    email_col = find_column_case_insensitive(df_requests, "Email")
+
+    if not task_assignee_col:
+        print(
+            "Error: Could not find 'Task Assignee - Subtask' column (case-insensitive). Available columns:"
+        )
+        print(list(df_requests.columns))
+        return
+
+    if not workflows_col:
+        print(
+            "Error: Could not find 'Workflows' column (case-insensitive). Available columns:"
+        )
+        print(list(df_requests.columns))
+        return
+
+    if not email_col:
+        print(
+            "Error: Could not find 'Email' column (case-insensitive). Available columns:"
+        )
+        print(list(df_requests.columns))
+        return
+
     # Filter for Salesforce tasks
     print("Filtering for Salesforce tasks.")
     df_requests = df_requests.loc[
-        df_requests["Task Assignee - Subtask"] == "Salesforce"
+        df_requests[task_assignee_col] == "Salesforce"
     ].reset_index(drop=True)
     print(f"{df_requests.shape[0]} requests remaining.")
 
     # Mapping based on conditions
     print("Categorizing.")
     conditions = [
-        df_requests["Workflows"].isin(
+        df_requests[workflows_col].isin(
             ["[Consumer] Data Removal", "[E&E] Data Removal"]
         ),
-        df_requests["Workflows"] == "[Consumer] Unsubscribe",
-        df_requests["Workflows"] == "[Consumer] Credit Card Removal",
+        df_requests[workflows_col] == "[Consumer] Unsubscribe",
+        df_requests[workflows_col] == "[Consumer] Credit Card Removal",
     ]
 
     choices = ["data_removal", "unsubscribe", "credit_card_removal"]
@@ -191,17 +271,17 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
 
     data_removal_email_list = df_requests.loc[
         df_requests["request_type"] == "data_removal"
-    ]["Email"].tolist()
+    ][email_col].tolist()
     print(f"Identified {len(data_removal_email_list)} data removal requests.")
 
     unsubscribe_email_list = df_requests.loc[
         df_requests["request_type"] == "unsubscribe"
-    ]["Email"].tolist()
+    ][email_col].tolist()
     print(f"Identified {len(unsubscribe_email_list)} unsubscribe requests.")
 
     cc_removal_email_list = df_requests.loc[
         df_requests["request_type"] == "credit_card_removal"
-    ]["Email"].tolist()
+    ][email_col].tolist()
     print(f"Identified {len(cc_removal_email_list)} credit card removal requests.")
 
     # To strings for queries
@@ -618,9 +698,7 @@ def handle_email_list(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     print("Starting to process a list of email addresses...")
 
     # Get lists of email addresses
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.askopenfilename()
+    file_path = open_file_dialog_focused()
 
     # Handle case where no file is selected
     if not file_path:
@@ -636,12 +714,12 @@ def handle_email_list(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
         return  # Return to the main menu if file reading fails
 
     # Split into chunks of length n
-    n = 400
+    n = 300
     contacts_chunks = [contacts[i : i + n] for i in range(0, len(contacts), n)]
     total_chunks = len(contacts_chunks)
 
     print(f"{len(contacts)} email addresses loaded.")
-    print(f"Splitting the data into {total_chunks} chunks of up to 400 contacts each.")
+    print(f"Splitting the data into {total_chunks} chunks of up to 300 contacts each.")
 
     # Pause
     input("Next step: Connect to SFDC. Press Enter to continue...")

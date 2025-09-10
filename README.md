@@ -59,7 +59,7 @@ If you prefer to distribute or run the tool as an executable file, you can build
 2. **Build the Executable**: Run the following command to package the script into an executable:
 
    ```bash
-   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico process-sfdc-data-removal-requests.py
+   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico --version-file=version_info.txt --noupx --console --clean --noconfirm process-sfdc-data-removal-requests.py
    ```
 
    This will create a single executable file (`data-removal-tool-0.2.exe`) in the `dist` directory.
@@ -99,7 +99,46 @@ Feel free to reach out to me if you have any questions or suggestions.
 
 Matthias Ragus ([matt@tala.dev](mailto:matt@tala.dev))
 
+## Windows Security Notice
+
+When running the executable for the first time, Windows may display a security warning because the application is not digitally signed. This is normal behavior for unsigned executables.
+
+**If Windows blocks the executable:**
+
+1. **Windows Defender SmartScreen Warning:**
+
+   - Click "More info"
+   - Click "Run anyway"
+
+2. **If the file is quarantined:**
+
+   - Open Windows Security (Windows Defender)
+   - Go to "Virus & threat protection"
+   - Click "Protection history"
+   - Find the quarantined file and restore it
+   - Add the executable to exclusions if needed
+
+3. **Alternative method:**
+   - Right-click the executable
+   - Select "Properties"
+   - Check "Unblock" if present
+   - Click "OK"
+
+**Why this happens:**
+
+- The executable is not digitally signed with a code signing certificate
+- Windows treats unsigned executables as potentially unsafe
+- This is a security feature, not a virus detection
+
+The application is safe to run and contains no malicious code.
+
 ## Version History
+
+- 0.4
+
+  - Disabled UPX compression to reduce antivirus false positives
+  - Added version information to executable
+  - Improved Windows compatibility
 
 - 0.3
 
