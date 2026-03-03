@@ -173,7 +173,7 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
         # Create dtype_dict with actual column names (case-insensitive matching)
         desired_dtypes = {
             "Email": str,
-            "Workflows": str,
+            "Workflow": str,
             "Task Assignee - Subtask": str,
             "Request Ref ID": str,
             "Task Name - Subtask": str,
@@ -218,7 +218,7 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     task_assignee_col = find_column_case_insensitive(
         df_requests, "Task Assignee - Subtask"
     )
-    workflows_col = find_column_case_insensitive(df_requests, "Workflows")
+    workflows_col = find_column_case_insensitive(df_requests, "Workflow")
     email_col = find_column_case_insensitive(df_requests, "Email")
 
     if not task_assignee_col:
@@ -230,7 +230,7 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
 
     if not workflows_col:
         print(
-            "Error: Could not find 'Workflows' column (case-insensitive). Available columns:"
+            "Error: Could not find 'Workflow' column (case-insensitive). Available columns:"
         )
         print(list(df_requests.columns))
         return
@@ -283,6 +283,11 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
         df_requests["request_type"] == "credit_card_removal"
     ][email_col].tolist()
     print(f"Identified {len(cc_removal_email_list)} credit card removal requests.")
+
+    # Escape apostrophes in email addresses for SOQL
+    data_removal_email_list = [e.replace("'", "\\'") for e in data_removal_email_list]
+    unsubscribe_email_list = [e.replace("'", "\\'") for e in unsubscribe_email_list]
+    cc_removal_email_list = [e.replace("'", "\\'") for e in cc_removal_email_list]
 
     # To strings for queries
     data_removal_email_list_str = ",".join(f"'{x}'" for x in data_removal_email_list)
@@ -516,7 +521,7 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
         print("\nDone!")
 
         # To dataframe
-        df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1)
+        df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
         print(f"{df.shape[0]} contact(s) found.")
 
         if df.shape[0] > 0:
@@ -997,7 +1002,7 @@ def delete_flagged_records(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     print("\nDone!")
 
     # To dataframe
-    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1)
+    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
     print(f"{df.shape[0]} case(s) found.")
 
     # Export
@@ -1078,7 +1083,7 @@ def delete_flagged_records(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     print("\nDone!")
 
     # To dataframe
-    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1)
+    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
     print(f"{df.shape[0]} contact(s) found.")
 
     # Export
