@@ -1,5 +1,6 @@
 # Instructions
-# Export subtasks from OneTrust as CSV.
+# Export subtasks from OneTrust (legacy) or GURPS (new) as CSV/XLSX.
+# You will be prompted to choose the source format.
 # Look out for the file dialog.
 
 # Import packages
@@ -21,6 +22,71 @@ import time
 import itertools
 
 
+# Source format configurations.
+# - OneTrust (legacy): column names from the original OneTrust subtask export.
+# - GURPS (new): column names from the GURPS subtask export.
+SOURCE_FORMATS = {
+    "onetrust": {
+        "label": "OneTrust (legacy)",
+        "dtypes": {
+            "Email": str,
+            "Workflow": str,
+            "Task Assignee - Subtask": str,
+            "Request Ref ID": str,
+            "Task Name - Subtask": str,
+            "Stage": str,
+            "Subtask Status - Subtask": str,
+            "Task Required - Subtask": str,
+            "Task Due Date - Subtask": str,
+            "Task Reminder Date - Subtask": str,
+            "Task Assigned Date - Subtask": str,
+            "First Name": str,
+            "Last Name": str,
+            "Request Type": str,
+            "Due Date": str,
+            "Approver": str,
+            "Date Submitted": str,
+            "Organization": str,
+            "Task Resolution - Subtask": str,
+            "Subtask Created Stage - Subtask": str,
+            "Current Request Stage - Subtask": str,
+        },
+        "assignee_col": "Task Assignee - Subtask",
+        "request_type_col": "Workflow",
+        "email_col": "Email",
+        "data_removal_values": ["[Consumer] Data Removal", "[E&E] Data Removal"],
+        "unsubscribe_values": ["[Consumer] Unsubscribe"],
+        "credit_card_values": ["[Consumer] Credit Card Removal"],
+    },
+    "gurps": {
+        "label": "GURPS (new)",
+        "dtypes": {
+            "Subtask ID": str,
+            "Request ID": str,
+            "Title": str,
+            "Subtask Status": str,
+            "Assignee": str,
+            "Author": str,
+            "Date Created": str,
+            "Days Remaining": str,
+            "Stage": str,
+            "Description": str,
+            "Customer Email": str,
+            "Request Type": str,
+            "Requester Role": str,
+            "Request Status": str,
+            "Request Due Date": str,
+        },
+        "assignee_col": "Assignee",
+        "request_type_col": "Request Type",
+        "email_col": "Customer Email",
+        "data_removal_values": ["Data Deletion", "Ee Data Deletion"],
+        "unsubscribe_values": ["Unsubscribe"],
+        "credit_card_values": ["Credit Card Removal"],
+    },
+}
+
+
 def get_user_action():
     print()
     questions = [
@@ -29,7 +95,7 @@ def get_user_action():
             "name": "action",
             "message": "What action would you like to perform?",
             "choices": [
-                "Process a list of OneTrust requests",
+                "Process a list of removal requests",
                 "Process a list of email addresses",
                 "Delete all flagged records in SFDC",
                 "Exit",
@@ -38,6 +104,23 @@ def get_user_action():
     ]
     answers = prompt(questions)
     return answers["action"]
+
+
+def get_source_format():
+    print()
+    questions = [
+        {
+            "type": "list",
+            "name": "format",
+            "message": "Which source format is the file in?",
+            "choices": [
+                {"name": SOURCE_FORMATS["onetrust"]["label"], "value": "onetrust"},
+                {"name": SOURCE_FORMATS["gurps"]["label"], "value": "gurps"},
+            ],
+        }
+    ]
+    answers = prompt(questions)
+    return answers["format"]
 
 
 def main():
@@ -105,7 +188,7 @@ def main():
             # Get user selection
             user_action = get_user_action()
 
-            if user_action == "Process a list of OneTrust requests":
+            if user_action == "Process a list of removal requests":
                 handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
             elif user_action == "Process a list of email addresses":
                 handle_email_list(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
@@ -149,7 +232,10 @@ def open_file_dialog_focused():
 
 
 def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
-    print("Starting to process a list of OneTrust requests...")
+    # Choose source format
+    source_key = get_source_format()
+    source_config = SOURCE_FORMATS[source_key]
+    print(f"Starting to process a list of {source_config['label']} requests...")
 
     # Load requests
     res_2 = input("XLSX (x) or CSV (c)? ")
@@ -170,34 +256,9 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
             print("Invalid input. Returning to the main menu...")
             return
 
-        # Create dtype_dict with actual column names (case-insensitive matching)
-        desired_dtypes = {
-            "Email": str,
-            "Workflow": str,
-            "Task Assignee - Subtask": str,
-            "Request Ref ID": str,
-            "Task Name - Subtask": str,
-            "Stage": str,
-            "Subtask Status - Subtask": str,
-            "Task Required - Subtask": str,
-            "Task Due Date - Subtask": str,
-            "Task Reminder Date - Subtask": str,
-            "Task Assigned Date - Subtask": str,
-            "First Name": str,
-            "Last Name": str,
-            "Request Type": str,
-            "Due Date": str,
-            "Approver": str,
-            "Date Submitted": str,
-            "Organization": str,
-            "Task Resolution - Subtask": str,
-            "Subtask Created Stage - Subtask": str,
-            "Current Request Stage - Subtask": str,
-        }
-
-        # Map desired column names to actual column names
+        # Map desired column names (per source format) to actual column names
         dtype_dict = {}
-        for desired_col, dtype in desired_dtypes.items():
+        for desired_col, dtype in source_config["dtypes"].items():
             actual_col = find_column_case_insensitive(df_temp, desired_col)
             if actual_col:
                 dtype_dict[actual_col] = dtype
@@ -214,30 +275,32 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
 
     print(f"{df_requests.shape[0]} requests loaded.")
 
-    # Find column names case-insensitively
+    # Find column names case-insensitively (using the names for the chosen format)
     task_assignee_col = find_column_case_insensitive(
-        df_requests, "Task Assignee - Subtask"
+        df_requests, source_config["assignee_col"]
     )
-    workflows_col = find_column_case_insensitive(df_requests, "Workflow")
-    email_col = find_column_case_insensitive(df_requests, "Email")
+    request_type_col = find_column_case_insensitive(
+        df_requests, source_config["request_type_col"]
+    )
+    email_col = find_column_case_insensitive(df_requests, source_config["email_col"])
 
     if not task_assignee_col:
         print(
-            "Error: Could not find 'Task Assignee - Subtask' column (case-insensitive). Available columns:"
+            f"Error: Could not find '{source_config['assignee_col']}' column (case-insensitive). Available columns:"
         )
         print(list(df_requests.columns))
         return
 
-    if not workflows_col:
+    if not request_type_col:
         print(
-            "Error: Could not find 'Workflow' column (case-insensitive). Available columns:"
+            f"Error: Could not find '{source_config['request_type_col']}' column (case-insensitive). Available columns:"
         )
         print(list(df_requests.columns))
         return
 
     if not email_col:
         print(
-            "Error: Could not find 'Email' column (case-insensitive). Available columns:"
+            f"Error: Could not find '{source_config['email_col']}' column (case-insensitive). Available columns:"
         )
         print(list(df_requests.columns))
         return
@@ -249,14 +312,12 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
     ].reset_index(drop=True)
     print(f"{df_requests.shape[0]} requests remaining.")
 
-    # Mapping based on conditions
+    # Mapping based on conditions (per source format)
     print("Categorizing.")
     conditions = [
-        df_requests[workflows_col].isin(
-            ["[Consumer] Data Removal", "[E&E] Data Removal"]
-        ),
-        df_requests[workflows_col] == "[Consumer] Unsubscribe",
-        df_requests[workflows_col] == "[Consumer] Credit Card Removal",
+        df_requests[request_type_col].isin(source_config["data_removal_values"]),
+        df_requests[request_type_col].isin(source_config["unsubscribe_values"]),
+        df_requests[request_type_col].isin(source_config["credit_card_values"]),
     ]
 
     choices = ["data_removal", "unsubscribe", "credit_card_removal"]
@@ -672,10 +733,12 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
 
             # Change email addresses to lowercase
             df["Email"] = df["Email"].str.lower()
-            df_cc["Email"] = df_cc["Email"].str.lower()
+            df_cc[email_col] = df_cc[email_col].str.lower()
 
             # Merge
-            df_cc_final = df_cc.merge(df, on="Email", how="left")
+            df_cc_final = df_cc.merge(
+                df, left_on=email_col, right_on="Email", how="left"
+            )
 
             # Export
             print("Exporting to CSV.")
