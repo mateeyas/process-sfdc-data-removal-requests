@@ -134,6 +134,17 @@ The application is safe to run and contains no malicious code.
 
 ## Version History
 
+- 0.7
+
+  - Improved UI with `rich` for coloured output, section headers, and summary banners.
+  - Replaced bare `input()` file-format prompt with an InquirerPy list selector.
+  - Added explicit confirmation step before deleting flagged records.
+  - Surfaces unmatched/unrecognised request types as a warning instead of silently skipping them.
+  - File dialog now falls back to a manual path prompt if dismissed without a selection.
+  - Extracted shared helpers to eliminate repeated spinner/query/update/result patterns.
+  - Fixed bare `except: pass` blocks to log exceptions properly.
+  - Removed leftover debug `df.shape` calls.
+
 - 0.4
 
   - Disabled UPX compression to reduce antivirus false positives
