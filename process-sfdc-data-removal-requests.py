@@ -21,6 +21,14 @@ import threading
 import time
 import itertools
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.text import Text
+from rich import print as rprint
+
+console = Console()
+
 
 # Source format configurations.
 # - OneTrust (legacy): column names from the original OneTrust subtask export.
@@ -87,6 +95,17 @@ SOURCE_FORMATS = {
 }
 
 
+def print_result_summary(result, label="records"):
+    """Print a summary of a Salesforce bulk operation result."""
+    success_count = sum(1 for d in result if d["success"] is True)
+    fail_count = len(result) - success_count
+    if fail_count == 0:
+        console.print(f"  [green]✔  OK: {success_count}  |  Fail: {fail_count}[/green]")
+    else:
+        console.print(f"  [red]✘  OK: {success_count}  |  Fail: {fail_count}[/red]")
+    return success_count, fail_count
+
+
 def get_user_action():
     print()
     questions = [
@@ -123,69 +142,66 @@ def get_source_format():
     return answers["format"]
 
 
+def get_file_format():
+    """Ask the user whether the file is XLSX or CSV using an InquirerPy prompt."""
+    print()
+    questions = [
+        {
+            "type": "list",
+            "name": "format",
+            "message": "What format is the file?",
+            "choices": [
+                {"name": "Excel (.xlsx)", "value": "x"},
+                {"name": "CSV (.csv)", "value": "c"},
+            ],
+        }
+    ]
+    answers = prompt(questions)
+    return answers["format"]
+
+
 def main():
     try:
-        # Add these lines at the start of main() to ensure proper encoding
+        # Ensure proper encoding
         sys.stdout = codecs.getwriter("utf-8")(sys.stdout.buffer)
 
-        # ASCII art
-        print(
-            """🚀
-####### **********   *************      
-#######   ********* **************      
-#######    ***********************      
-#######      ************ ********      
-#######    ***********************      
-#######   ******** *********************    
-####### *********    *******************
-"""
-        )
-        # Welcome message
-        print("Welcome to the contact removal tool.")
-        print("Getting things ready...")
+        console.print(Panel.fit(
+            "[bold cyan]🚀  Contact Removal Tool[/bold cyan]\n"
+            "[dim]SFDC data removal · unsubscribe · credit card removal[/dim]",
+            border_style="cyan",
+        ))
+
+        console.print("Getting things ready…")
 
         # Set working directory
         def get_script_dir():
-            """Get the directory of the current script or executable"""
             if getattr(sys, "frozen", False):
-                # If the application is run as a bundle, the pyInstaller bootloader
-                # sets the sys.frozen attribute and this method returns the path
-                # to the bundle file.
                 return os.path.dirname(sys.executable)
             else:
-                # If the application is run in a normal Python environment, return
-                # the path to the script file.
                 return os.path.dirname(os.path.abspath(__file__))
 
         script_dir = get_script_dir()
         os.chdir(script_dir)
 
         # Get SFDC credentials
-        print("Opening sfdc.ini to get the SFDC credentials.")
-        # Initialize the ConfigParser
         config = ConfigParser()
-
-        # Define the path to the config file
         config_file_path = "sfdc.ini"
 
-        # Check if the config file exists
         if not os.path.exists(config_file_path):
             raise FileNotFoundError(f"{config_file_path} does not exist.")
 
-        # Read the config.ini file
         config.read(config_file_path)
 
-        # Retrieve the secrets
         SFDC_USERNAME = config.get("secrets", "SFDC_USERNAME")
         SFDC_PASSWORD = config.get("secrets", "SFDC_PASSWORD")
         SFDC_TOKEN = config.get("secrets", "SFDC_TOKEN")
 
-        # Raise an error if any of the secrets are missing
         if not SFDC_USERNAME or not SFDC_PASSWORD or not SFDC_TOKEN:
             raise ValueError("One or more SFDC credentials are not set in config file.")
 
+        console.print("[green]✔  Credentials loaded.[/green]")
+
         while True:
-            # Get user selection
             user_action = get_user_action()
 
             if user_action == "Process a list of removal requests":
@@ -195,12 +211,11 @@ def main():
             elif user_action == "Delete all flagged records in SFDC":
                 delete_flagged_records(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
             elif user_action == "Exit":
-                print("Exiting...")
+                console.print("Goodbye. 👋")
                 break
 
     except Exception as e:
-        print("An error occurred:")
-        print(traceback.format_exc())
+        console.print_exception()
         input("Press Enter to exit...")
 
 
@@ -219,491 +234,288 @@ def find_column_case_insensitive(df, target_column):
 def open_file_dialog_focused():
     """
     Opens a file dialog with proper focus handling to prevent it from opening behind other windows.
-    Returns the selected file path or empty string if no file is selected.
+    Falls back to a manual path prompt if no file is selected from the dialog.
+    Returns the selected file path or empty string if the user cancels.
     """
     root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    root.attributes("-topmost", True)  # Keep on top
-    root.lift()  # Bring to front
-    root.focus_force()  # Force focus
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
     file_path = filedialog.askopenfilename(parent=root)
-    root.destroy()  # Clean up
+    root.destroy()
+
+    if not file_path:
+        console.print("[dim]No file chosen from dialog. Enter the path manually (or leave blank to cancel):[/dim]")
+        manual = input("  File path: ").strip()
+        file_path = manual
+
     return file_path
 
 
+def connect_to_sfdc(username, password, token):
+    """Connect to Salesforce and return the client, with a spinner."""
+    stop_spinner = threading.Event()
+    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
+    console.print("Connecting to Salesforce…", end="", flush=True)
+    spinner_thread.start()
+    try:
+        sf = Salesforce(username=username, password=password, security_token=token)
+    finally:
+        stop_spinner.set()
+        spinner_thread.join()
+    console.print("\r[green]✔  Connected to Salesforce.[/green]          ")
+    return sf
+
+
+def run_query_with_spinner(sf, query, label="Querying SFDC"):
+    """Run a SOQL query with a spinner, return the result data."""
+    stop_spinner = threading.Event()
+    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
+    console.print(f"{label}…", end="", flush=True)
+    spinner_thread.start()
+    try:
+        data = sf.query_all(query)
+    finally:
+        stop_spinner.set()
+        spinner_thread.join()
+    console.print(f"\r[green]✔  {label} — done.[/green]          ")
+    return data
+
+
+def push_update_with_spinner(sf_bulk_op, records, batch_size, label="Pushing updates to SFDC"):
+    """Run a Salesforce bulk update/delete with a spinner, return the result."""
+    stop_spinner = threading.Event()
+    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
+    console.print(f"{label}…", end="", flush=True)
+    spinner_thread.start()
+    try:
+        result = sf_bulk_op(records, batch_size=batch_size, use_serial=True)
+    finally:
+        stop_spinner.set()
+        spinner_thread.join()
+    console.print(f"\r[green]✔  {label} — done.[/green]          ")
+    return result
+
+
+def write_results_file(result, path):
+    """Write raw bulk operation results to a text file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for item in result:
+            f.write("%s\n" % item)
+    console.print(f"  [dim]Results saved → {path}[/dim]")
+
+
 def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
+    console.rule("[bold]Process Removal Requests[/bold]")
+
     # Choose source format
     source_key = get_source_format()
     source_config = SOURCE_FORMATS[source_key]
-    print(f"Starting to process a list of {source_config['label']} requests...")
+    console.print(f"Source format: [cyan]{source_config['label']}[/cyan]")
 
-    # Load requests
-    res_2 = input("XLSX (x) or CSV (c)? ")
+    # Choose file format
+    file_format = get_file_format()
+
+    # Pick file
     file_path = open_file_dialog_focused()
-
-    # Handle case where no file is selected
     if not file_path:
-        print("No file selected. Returning to the main menu...")
+        console.print("[yellow]No file selected. Returning to the main menu.[/yellow]")
         return
 
     try:
-        # First load without dtype to get the actual column names
-        if res_2 == "x":
-            df_temp = pd.read_excel(file_path, nrows=0)  # Just get headers
-        elif res_2 == "c":
-            df_temp = pd.read_csv(file_path, nrows=0)  # Just get headers
+        if file_format == "x":
+            df_temp = pd.read_excel(file_path, nrows=0)
         else:
-            print("Invalid input. Returning to the main menu...")
-            return
+            df_temp = pd.read_csv(file_path, nrows=0)
 
-        # Map desired column names (per source format) to actual column names
         dtype_dict = {}
         for desired_col, dtype in source_config["dtypes"].items():
             actual_col = find_column_case_insensitive(df_temp, desired_col)
             if actual_col:
                 dtype_dict[actual_col] = dtype
 
-        # Now load the full file with proper dtypes
-        if res_2 == "x":
+        if file_format == "x":
             df_requests = pd.read_excel(file_path, dtype=dtype_dict)
-        elif res_2 == "c":
+        else:
             df_requests = pd.read_csv(file_path, dtype=dtype_dict)
 
     except Exception as e:
-        print(f"Error loading the file: {e}. Returning to the main menu...")
+        console.print(f"[red]Error loading file: {e}[/red]")
+        console.print_exception()
         return
 
-    print(f"{df_requests.shape[0]} requests loaded.")
+    console.print(f"[green]✔  {df_requests.shape[0]} requests loaded.[/green]")
 
-    # Find column names case-insensitively (using the names for the chosen format)
-    task_assignee_col = find_column_case_insensitive(
-        df_requests, source_config["assignee_col"]
-    )
-    request_type_col = find_column_case_insensitive(
-        df_requests, source_config["request_type_col"]
-    )
+    # Validate required columns
+    task_assignee_col = find_column_case_insensitive(df_requests, source_config["assignee_col"])
+    request_type_col = find_column_case_insensitive(df_requests, source_config["request_type_col"])
     email_col = find_column_case_insensitive(df_requests, source_config["email_col"])
 
+    missing = []
     if not task_assignee_col:
-        print(
-            f"Error: Could not find '{source_config['assignee_col']}' column (case-insensitive). Available columns:"
-        )
-        print(list(df_requests.columns))
-        return
-
+        missing.append(source_config["assignee_col"])
     if not request_type_col:
-        print(
-            f"Error: Could not find '{source_config['request_type_col']}' column (case-insensitive). Available columns:"
-        )
-        print(list(df_requests.columns))
-        return
-
+        missing.append(source_config["request_type_col"])
     if not email_col:
-        print(
-            f"Error: Could not find '{source_config['email_col']}' column (case-insensitive). Available columns:"
-        )
-        print(list(df_requests.columns))
+        missing.append(source_config["email_col"])
+
+    if missing:
+        console.print(f"[red]Error: could not find required column(s): {missing}[/red]")
+        console.print(f"Available columns: {list(df_requests.columns)}")
         return
 
     # Filter for Salesforce tasks
-    print("Filtering for Salesforce tasks.")
     df_requests = df_requests.loc[
         df_requests[task_assignee_col] == "Salesforce"
     ].reset_index(drop=True)
-    print(f"{df_requests.shape[0]} requests remaining.")
+    console.print(f"  {df_requests.shape[0]} requests assigned to Salesforce.")
 
-    # Mapping based on conditions (per source format)
-    print("Categorizing.")
+    # Categorise
     conditions = [
         df_requests[request_type_col].isin(source_config["data_removal_values"]),
         df_requests[request_type_col].isin(source_config["unsubscribe_values"]),
         df_requests[request_type_col].isin(source_config["credit_card_values"]),
     ]
-
     choices = ["data_removal", "unsubscribe", "credit_card_removal"]
-
     df_requests["request_type"] = np.select(conditions, choices, default="unknown")
 
-    # If you need to identify unmatched records later, you can do:
     unmatched_requests = df_requests[df_requests["request_type"] == "unknown"]
+    if not unmatched_requests.empty:
+        console.print(
+            f"[yellow]⚠  {len(unmatched_requests)} request(s) had an unrecognised type and will be skipped.[/yellow]"
+        )
+        console.print(f"  Unrecognised values: {unmatched_requests[request_type_col].unique().tolist()}")
 
-    # Get lists of email addresses
-    print("Extracting email addresses.")
+    # Extract email lists
+    data_removal_email_list = df_requests.loc[df_requests["request_type"] == "data_removal"][email_col].tolist()
+    unsubscribe_email_list = df_requests.loc[df_requests["request_type"] == "unsubscribe"][email_col].tolist()
+    cc_removal_email_list = df_requests.loc[df_requests["request_type"] == "credit_card_removal"][email_col].tolist()
 
-    data_removal_email_list = df_requests.loc[
-        df_requests["request_type"] == "data_removal"
-    ][email_col].tolist()
-    print(f"Identified {len(data_removal_email_list)} data removal requests.")
+    console.print(f"  Data removal:      [bold]{len(data_removal_email_list)}[/bold]")
+    console.print(f"  Unsubscribe:       [bold]{len(unsubscribe_email_list)}[/bold]")
+    console.print(f"  Credit card:       [bold]{len(cc_removal_email_list)}[/bold]")
 
-    unsubscribe_email_list = df_requests.loc[
-        df_requests["request_type"] == "unsubscribe"
-    ][email_col].tolist()
-    print(f"Identified {len(unsubscribe_email_list)} unsubscribe requests.")
-
-    cc_removal_email_list = df_requests.loc[
-        df_requests["request_type"] == "credit_card_removal"
-    ][email_col].tolist()
-    print(f"Identified {len(cc_removal_email_list)} credit card removal requests.")
-
-    # Escape apostrophes in email addresses for SOQL
+    # Escape apostrophes
     data_removal_email_list = [e.replace("'", "\\'") for e in data_removal_email_list]
     unsubscribe_email_list = [e.replace("'", "\\'") for e in unsubscribe_email_list]
     cc_removal_email_list = [e.replace("'", "\\'") for e in cc_removal_email_list]
 
-    # To strings for queries
     data_removal_email_list_str = ",".join(f"'{x}'" for x in data_removal_email_list)
     unsubscribe_email_list_str = ",".join(f"'{x}'" for x in unsubscribe_email_list)
     cc_removal_email_list_str = ",".join(f"'{x}'" for x in cc_removal_email_list)
 
-    # Pause
-    input("Next step: Connect to SFDC. Press Enter to continue...")
+    sf = connect_to_sfdc(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
 
-    # Initiate SFDC connection
-    sf = Salesforce(
-        username=SFDC_USERNAME, password=SFDC_PASSWORD, security_token=SFDC_TOKEN
+    # ── Data removal contacts & accounts ─────────────────────────────────────
+    console.rule("[dim]Data removal[/dim]")
+
+    query = (
+        "SELECT Id, AccountId, Account.RecordTypeId "
+        f"FROM Contact WHERE Email IN ({data_removal_email_list_str})"
     )
+    data = run_query_with_spinner(sf, query, "Querying contacts and accounts")
 
-    # Query data removal contacts and accounts
-    # Careful: data mix
-
-    query = """
-    SELECT
-        Id,
-        AccountId,
-        Account.RecordTypeId
-    FROM Contact WHERE Email IN (
-        {0}
-    )
-    """
-
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-    print("Querying accounts and contacts from SFDC...", end="", flush=True)
-    spinner_thread.start()
-
-    # Remove first and last line
-    query = "\n".join(query.split("\n")[1:-1])
-    # Add variables
-    query = query.format(data_removal_email_list_str)
-    # Run query
-    data = sf.query_all(query)
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # Get rows
     rows = []
     for item in data["records"]:
         row = {}
         try:
             row["Id"] = item["Id"]
             row["AccountId"] = item["AccountId"]
-        except:
-            pass
+        except Exception as exc:
+            console.print(f"[yellow]  Warning: could not read Id/AccountId from record: {exc}[/yellow]")
         try:
             row["RecordTypeId"] = item["Account"]["RecordTypeId"]
-        except:
-            pass
+        except Exception as exc:
+            console.print(f"[yellow]  Warning: could not read RecordTypeId from record: {exc}[/yellow]")
         rows.append(row)
 
-    # To dataframe
     df = pd.DataFrame(rows)
-    print(f"{df.shape[0]} contact(s) found.")
+    console.print(f"  {df.shape[0]} contact(s) found.")
 
-    # Set flags
-    # For contacts
     df["GDPR__c"] = 1
-
-    print(
-        f"Identified {df.shape[0]} contact(s) to be flagged for deletion. (Setting `GDPR__c` to true.)"
-    )
-
-    # For accounts
     df["GDPR_Account__c"] = np.where(df["RecordTypeId"] == "012d0000000W68QAAS", 1, 0)
-    print(
-        f"Identified {df['GDPR_Account__c'].sum()} household account(s) to be flagged for deletion. (Setting `GDPR_Account__c` to true.)"
-    )
 
-    # Split
+    console.print(f"  Flagging [bold]{df.shape[0]}[/bold] contact(s) for deletion (GDPR__c = true).")
+    console.print(f"  Flagging [bold]{int(df['GDPR_Account__c'].sum())}[/bold] household account(s) for deletion (GDPR_Account__c = true).")
+
     df_contacts = df[["Id", "GDPR__c"]]
-
-    df_accounts = df[["AccountId", "GDPR_Account__c"]]
-
-    # Rename
-    df_accounts = df_accounts.rename(columns={"AccountId": "Id"}, inplace=False)
-    # Filter
+    df_accounts = df[["AccountId", "GDPR_Account__c"]].rename(columns={"AccountId": "Id"})
     df_accounts = df_accounts.loc[df_accounts["GDPR_Account__c"] == 1]
 
-    # Export
-    print("Exporting to CSV.")
     os.makedirs("exports", exist_ok=True)
-    df_contacts.to_csv(
-        r"exports/data_removal_contacts_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".csv",
-        encoding="utf-8",
-        index=False,
+    ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+    contacts_export = f"exports/data_removal_contacts_{ts}.csv"
+    accounts_export = f"exports/data_removal_accounts_{ts}.csv"
+    df_contacts.to_csv(contacts_export, encoding="utf-8", index=False)
+    df_accounts.to_csv(accounts_export, encoding="utf-8", index=False)
+    console.print(f"  [dim]Exported → {contacts_export}[/dim]")
+    console.print(f"  [dim]Exported → {accounts_export}[/dim]")
+
+    result = push_update_with_spinner(
+        sf.bulk.Contact.update,
+        df_contacts.to_dict("records"),
+        batch_size=20,
+        label="Flagging contacts",
     )
-    df_accounts.to_csv(
-        r"exports/data_removal_accounts_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".csv",
-        encoding="utf-8",
-        index=False,
+    ok, fail = print_result_summary(result, "contacts")
+    write_results_file(result, f"results/results_data_removal_contacts_{ts}.txt")
+
+    result = push_update_with_spinner(
+        sf.bulk.Account.update,
+        df_accounts.to_dict("records"),
+        batch_size=20,
+        label="Flagging household accounts",
     )
+    ok, fail = print_result_summary(result, "accounts")
+    write_results_file(result, f"results/results_data_removal_accounts_{ts}.txt")
 
-    # Convert to lists of dicts
-    target_data_contacts = df_contacts.to_dict("records")
-    target_data_accounts = df_accounts.to_dict("records")
+    # ── Unsubscribe contacts ──────────────────────────────────────────────────
+    console.rule("[dim]Unsubscribe[/dim]")
 
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-    print("Pushing the GDPR flag update to contacts in SFDC...", end="", flush=True)
-    spinner_thread.start()
-
-    # Push contact updates to SFDC
-    result = sf.bulk.Contact.update(
-        target_data_contacts, batch_size=20, use_serial=True
-    )
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # Print success count
-    success_list = [1 if d["success"] is True else 0 for d in result]
-    success_emoji = "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-    print(
-        "OK: "
-        + str(sum(success_list))
-        + ", Fail: "
-        + str(len(success_list) - sum(success_list))
-        + ". "
-        + success_emoji
-    )
-
-    # Write results to file
-    print("Exporting the results.")
-    os.makedirs("results", exist_ok=True)
-    with open(
-        r"results/results_data_removal_contacts_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".txt",
-        "w",
-    ) as f:
-        for item in result:
-            f.write("%s\n" % item)
-
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-    print(
-        "Pushing the GDPR flag update to household accounts in SFDC...",
-        end="",
-        flush=True,
-    )
-    spinner_thread.start()
-
-    # Push account updates to SFDC
-    result = sf.bulk.Account.update(
-        target_data_accounts, batch_size=20, use_serial=True
-    )
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # Print success count
-    success_list = [1 if d["success"] is True else 0 for d in result]
-    success_emoji = "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-    print(
-        "OK: "
-        + str(sum(success_list))
-        + ", Fail: "
-        + str(len(success_list) - sum(success_list))
-        + ". "
-        + success_emoji
-    )
-
-    # Write results to file
-    print("Exporting the results.")
-    os.makedirs("results", exist_ok=True)
-    with open(
-        r"results/results_data_removal_accounts_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".txt",
-        "w",
-    ) as f:
-        for item in result:
-            f.write("%s\n" % item)
-
-    # Process unsubscribe contacts
     if len(unsubscribe_email_list) > 0:
-
-        # Query unsubscribe contacts
-        query = """
-        SELECT
-            Id
-        FROM Contact WHERE Email IN (
-            {0}
+        query = (
+            "SELECT Id "
+            f"FROM Contact WHERE Email IN ({unsubscribe_email_list_str})"
         )
-        """
+        data = run_query_with_spinner(sf, query, "Querying unsubscribe contacts")
 
-        # Start spinner
-        stop_spinner = threading.Event()
-        spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-        print(
-            "Querying contacts that want to unsubscribe from SFDC...",
-            end="",
-            flush=True,
-        )
-        spinner_thread.start()
-
-        # Remove first and last line
-        query = "\n".join(query.split("\n")[1:-1])
-        # Add variables
-        query = query.format(unsubscribe_email_list_str)
-        # Run query
-        data = sf.query_all(query)
-
-        # Stop spinner
-        stop_spinner.set()
-        spinner_thread.join()
-        print("\nDone!")
-
-        # To dataframe
         df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
-        print(f"{df.shape[0]} contact(s) found.")
+        console.print(f"  {df.shape[0]} contact(s) found.")
 
         if df.shape[0] > 0:
-
-            # Set flags
-            print(
-                "Preparing to set `HasOptedOutOfEmail` to true and `Marketing_Status__c` to 'No Marketing'."
-            )
             df["HasOptedOutOfEmail"] = 1
-            # df['Explicit_Opt_in__c'] = 0
-            # df['Opt_in__c'] = 0
             df["Marketing_Status__c"] = "No Marketing"
-            df.shape
 
-            # Export
-            print("Exporting to CSV.")
-            os.makedirs("exports", exist_ok=True)
-            df.to_csv(
-                r"exports/unsubscribe_contacts_"
-                + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                + ".csv",
-                encoding="utf-8",
-                index=False,
+            ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+            unsub_export = f"exports/unsubscribe_contacts_{ts}.csv"
+            df.to_csv(unsub_export, encoding="utf-8", index=False)
+            console.print(f"  [dim]Exported → {unsub_export}[/dim]")
+
+            result = push_update_with_spinner(
+                sf.bulk.Contact.update,
+                df.to_dict("records"),
+                batch_size=500,
+                label="Updating unsubscribe contacts",
             )
-
-            # Convert to list of dicts
-            target_data = df.to_dict("records")
-
-            # Start spinner
-            stop_spinner = threading.Event()
-            spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-            print(
-                "Pushing the unsubscribe updates to contacts in SFDC...",
-                end="",
-                flush=True,
-            )
-            spinner_thread.start()
-
-            # Push contact updates to SFDC
-            result = sf.bulk.Contact.update(
-                target_data, batch_size=500, use_serial=True
-            )
-
-            # Stop spinner
-            stop_spinner.set()
-            spinner_thread.join()
-            print("\nDone!")
-
-            # Print success count
-            success_list = [1 if d["success"] is True else 0 for d in result]
-            success_emoji = (
-                "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-            )
-            print(
-                "OK: "
-                + str(sum(success_list))
-                + ", Fail: "
-                + str(len(success_list) - sum(success_list))
-                + ". "
-                + success_emoji
-            )
-
-            # Write results to file
-            print("Exporting the results.")
-            os.makedirs("results", exist_ok=True)
-            with open(
-                r"results/results_unsubscribe_contacts_"
-                + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                + ".txt",
-                "w",
-            ) as f:
-                for item in result:
-                    f.write("%s\n" % item)
-        else:
-            pass
-
+            ok, fail = print_result_summary(result, "contacts")
+            write_results_file(result, f"results/results_unsubscribe_contacts_{ts}.txt")
     else:
-        print("No unsubscribe requests to process.")
+        console.print("  No unsubscribe requests to process.")
 
-    # Process credit card removal requests
+    # ── Credit card removal ───────────────────────────────────────────────────
+    console.rule("[dim]Credit card removal[/dim]")
+
     if len(cc_removal_email_list) > 0:
+        df_cc = df_requests[df_requests.request_type == "credit_card_removal"].reset_index(drop=True)
 
-        # Filter credit card removal requests
-        df_cc = df_requests[
-            df_requests.request_type == "credit_card_removal"
-        ].reset_index(drop=True)
-        df_cc.shape
-
-        # Query credit card removal contacts
-        query = """
-        SELECT
-            Id,
-            Email,
-            AccountId,
-            Account.RecordTypeId
-        FROM Contact WHERE Email IN (
-            {0}
+        query = (
+            "SELECT Id, Email, AccountId, Account.RecordTypeId "
+            f"FROM Contact WHERE Email IN ({cc_removal_email_list_str})"
         )
-        """
+        data = run_query_with_spinner(sf, query, "Querying credit card removal contacts")
 
-        # Start spinner
-        stop_spinner = threading.Event()
-        spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-        print("Querying credit card removal contacts from SFDC...", end="", flush=True)
-        spinner_thread.start()
-
-        # Remove first and last line
-        query = "\n".join(query.split("\n")[1:-1])
-        # Add variables
-        query = query.format(cc_removal_email_list_str)
-        # Run query
-        data = sf.query_all(query)
-
-        # Stop spinner
-        stop_spinner.set()
-        spinner_thread.join()
-        print("\nDone!")
-
-        # Get rows
         rows = []
         for item in data["records"]:
             row = {}
@@ -711,500 +523,227 @@ def handle_requests(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
                 row["Id"] = item["Id"]
                 row["AccountId"] = item["AccountId"]
                 row["Email"] = item["Email"]
-            except:
-                pass
+            except Exception as exc:
+                console.print(f"[yellow]  Warning: could not read record fields: {exc}[/yellow]")
             try:
                 row["RecordTypeId"] = item["Account"]["RecordTypeId"]
-            except:
-                pass
+            except Exception as exc:
+                console.print(f"[yellow]  Warning: could not read RecordTypeId: {exc}[/yellow]")
             rows.append(row)
 
-        # To dataframe
         df = pd.DataFrame(rows)
-        print(f"{df.shape[0]} contact(s) found.")
+        console.print(f"  {df.shape[0]} contact(s) found.")
 
         if df.shape[0] > 0:
-
-            # Add URLs
-            print("Generating SFDC links.")
-            df["sfdc_contact_link"] = (
-                "https://rs.lightning.force.com/lightning/r/" + df["Id"] + "/view"
-            )
-
-            # Change email addresses to lowercase
+            df["sfdc_contact_link"] = "https://rs.lightning.force.com/lightning/r/" + df["Id"] + "/view"
             df["Email"] = df["Email"].str.lower()
             df_cc[email_col] = df_cc[email_col].str.lower()
 
-            # Merge
-            df_cc_final = df_cc.merge(
-                df, left_on=email_col, right_on="Email", how="left"
-            )
+            df_cc_final = df_cc.merge(df, left_on=email_col, right_on="Email", how="left")
 
-            # Export
-            print("Exporting to CSV.")
-            os.makedirs("exports", exist_ok=True)
-            df_cc_final.to_csv(
-                r"exports/cc_removal_requests_with_contacts_"
-                + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                + ".csv",
-                encoding="utf-8",
-                index=False,
+            ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+            cc_export = f"exports/cc_removal_requests_with_contacts_{ts}.csv"
+            df_cc_final.to_csv(cc_export, encoding="utf-8", index=False)
+            console.print(f"  [dim]Exported → {cc_export}[/dim]")
+            console.print(
+                "[yellow]  ⚠  Don't forget to open the exported file and manually check SFDC for credit card numbers.[/yellow]"
             )
-
-            # Reminder
-            print(
-                "Don't forget to open the exported credit card removal requests file and manually look for credit card numbers in SFDC."
-            )
-
     else:
-        print("No credit card removal requests to process.")
+        console.print("  No credit card removal requests to process.")
 
-    input("Task completed. 🚀 Press Enter to return to the main menu...")
+    console.print()
+    input("Task completed. 🚀  Press Enter to return to the main menu…")
 
 
 def handle_email_list(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
-    print("Starting to process a list of email addresses...")
+    console.rule("[bold]Process Email List[/bold]")
 
-    # Get lists of email addresses
     file_path = open_file_dialog_focused()
-
-    # Handle case where no file is selected
     if not file_path:
-        print("No file selected. Returning to the main menu...")
-        return  # Return to the main menu
+        console.print("[yellow]No file selected. Returning to the main menu.[/yellow]")
+        return
 
     try:
         with open(file_path) as f:
-            lines = f.readlines()
-            contacts = [line.rstrip() for line in lines]
+            contacts = [line.rstrip() for line in f.readlines()]
     except Exception as e:
-        print(f"Error loading the file: {e}. Returning to the main menu...")
-        return  # Return to the main menu if file reading fails
+        console.print(f"[red]Error loading file: {e}[/red]")
+        console.print_exception()
+        return
 
-    # Split into chunks of length n
     n = 300
-    contacts_chunks = [contacts[i : i + n] for i in range(0, len(contacts), n)]
+    contacts_chunks = [contacts[i: i + n] for i in range(0, len(contacts), n)]
     total_chunks = len(contacts_chunks)
 
-    print(f"{len(contacts)} email addresses loaded.")
-    print(f"Splitting the data into {total_chunks} chunks of up to 300 contacts each.")
+    console.print(f"[green]✔  {len(contacts)} email address(es) loaded.[/green]")
+    console.print(f"  Splitting into {total_chunks} chunk(s) of up to {n}.")
 
-    # Pause
-    input("Next step: Connect to SFDC. Press Enter to continue...")
+    sf = connect_to_sfdc(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
 
-    # Initiate SFDC connection
-    sf = Salesforce(
-        username=SFDC_USERNAME, password=SFDC_PASSWORD, security_token=SFDC_TOKEN
-    )
+    os.makedirs("exports", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
-    # Execute
     for chunk_index, chunk in enumerate(contacts_chunks, start=1):
+        console.rule(f"[dim]Chunk {chunk_index} / {total_chunks}[/dim]")
 
-        # Escape apostrophes in email addresses
         chunk = [email.replace("'", "\\'") for email in chunk]
-
-        # To strings for query
-        print(f"Starting chunk {chunk_index} of {total_chunks}.")
         contacts_str = ",".join(f"'{x}'" for x in chunk)
 
-        # Query data removal contacts
-        query = """
-        SELECT
-            Id,
-            AccountId,
-            Account.RecordTypeId
-        FROM Contact WHERE Email IN (
-            {0}
+        query = (
+            "SELECT Id, AccountId, Account.RecordTypeId "
+            f"FROM Contact WHERE Email IN ({contacts_str})"
         )
-        """
-
-        # Start spinner
-        stop_spinner = threading.Event()
-        spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-        print("Querying contacts from SFDC...", end="", flush=True)
-        spinner_thread.start()
-
-        # Remove first and last line
-        query = "\n".join(query.split("\n")[1:-1])
-        # Add variables
-        query = query.format(contacts_str)
-        # Run query
-        data = sf.query_all(query)
-
-        # Stop spinner
-        stop_spinner.set()
-        spinner_thread.join()
-        print("\nDone!")
+        data = run_query_with_spinner(sf, query, "Querying contacts")
 
         if not data["records"]:
-            print("No contacts found for this chunk.")
+            console.print("  No contacts found for this chunk.")
+            continue
 
-        else:
+        rows = []
+        for item in data["records"]:
+            row = {}
+            try:
+                row["Id"] = item["Id"]
+                row["AccountId"] = item["AccountId"]
+            except Exception as exc:
+                console.print(f"[yellow]  Warning: could not read Id/AccountId: {exc}[/yellow]")
+            try:
+                row["RecordTypeId"] = item["Account"]["RecordTypeId"]
+            except Exception as exc:
+                console.print(f"[yellow]  Warning: could not read RecordTypeId: {exc}[/yellow]")
+            rows.append(row)
 
-            # Get rows
-            rows = []
-            for item in data["records"]:
-                row = {}
-                try:
-                    row["Id"] = item["Id"]
-                    row["AccountId"] = item["AccountId"]
-                except:
-                    pass
-                try:
-                    row["RecordTypeId"] = item["Account"]["RecordTypeId"]
-                except:
-                    pass
-                rows.append(row)
+        df = pd.DataFrame(rows)
+        console.print(f"  {df.shape[0]} contact(s) to flag for deletion (GDPR__c = true).")
 
-            # To dataframe
-            df = pd.DataFrame(rows)
-            print(
-                f"Identified {df.shape[0]} contact(s) to be flagged for deletion. (Setting `GDPR__c` to true.)"
-            )
+        if df.shape[0] > 0:
+            df["GDPR__c"] = 1
+            df_contacts = df[["Id", "GDPR__c"]]
 
-            # Check if data was found
-            if df.shape[0] > 0:
-                # Process contacts
-                df["GDPR__c"] = 1
-                df_contacts = df[["Id", "GDPR__c"]]
+            ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+            contacts_export = f"exports/flag_contacts_from_bulk_list_{ts}.csv"
+            df_contacts.to_csv(contacts_export, encoding="utf-8", index=False)
+            console.print(f"  [dim]Exported → {contacts_export}[/dim]")
 
-                # Export
-                print("Exporting to CSV.")
-                df_contacts.to_csv(
-                    r"exports/flag_contacts_from_bulk_list_"
-                    + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                    + ".csv",
-                    encoding="utf-8",
-                    index=False,
+            try:
+                result = push_update_with_spinner(
+                    sf.bulk.Contact.update,
+                    df_contacts.to_dict("records"),
+                    batch_size=500,
+                    label="Flagging contacts",
                 )
-                # Convert to lists of dicts
-                target_data_contacts = df_contacts.to_dict("records")
+                ok, fail = print_result_summary(result, "contacts")
+                write_results_file(result, f"results/results_flag_contacts_from_bulk_list_{ts}.txt")
+            except Exception as exc:
+                console.print(f"[red]  Contact update error: {exc}[/red]")
+                console.print_exception()
+
+            df["GDPR_Account__c"] = np.where(df["RecordTypeId"] == "012d0000000W68QAAS", 1, 0)
+            account_flag_count = int(df["GDPR_Account__c"].sum())
+            console.print(f"  {account_flag_count} household account(s) to flag (GDPR_Account__c = true).")
+
+            if account_flag_count > 0:
+                df_accounts = (
+                    df[["AccountId", "GDPR_Account__c"]]
+                    .rename(columns={"AccountId": "Id"})
+                    .loc[lambda d: d["GDPR_Account__c"] == 1]
+                )
+                accounts_export = f"exports/flag_accounts_{ts}.csv"
+                df_accounts.to_csv(accounts_export, encoding="utf-8", index=False)
+                console.print(f"  [dim]Exported → {accounts_export}[/dim]")
 
                 try:
-                    # Start spinner
-                    stop_spinner = threading.Event()
-                    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-                    print(
-                        "Pushing the GDPR flag update to contacts in SFDC...",
-                        end="",
-                        flush=True,
+                    result = push_update_with_spinner(
+                        sf.bulk.Account.update,
+                        df_accounts.to_dict("records"),
+                        batch_size=500,
+                        label="Flagging household accounts",
                     )
-                    spinner_thread.start()
+                    ok, fail = print_result_summary(result, "accounts")
+                    write_results_file(result, f"results/results_flag_accounts_from_bulk_list_{ts}.txt")
+                except Exception as exc:
+                    console.print(f"[red]  Account update error: {exc}[/red]")
+                    console.print_exception()
 
-                    # Push contact updates to SFDC
-                    result = sf.bulk.Contact.update(
-                        target_data_contacts, batch_size=500, use_serial=True
-                    )
-
-                    # Stop spinner
-                    stop_spinner.set()
-                    spinner_thread.join()
-                    print("\nDone!")
-
-                    # Print success count
-                    success_list = [1 if d["success"] is True else 0 for d in result]
-                    success_emoji = (
-                        "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-                    )
-
-                    print(
-                        "OK: "
-                        + str(sum(success_list))
-                        + ", Fail: "
-                        + str(len(success_list) - sum(success_list))
-                        + ". "
-                        + success_emoji
-                    )
-                    # Write result to file
-
-                    print("Exporting the results.")
-                    os.makedirs("results", exist_ok=True)
-                    with open(
-                        r"results/results_flag_contacts_from_bulk_list_"
-                        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                        + ".txt",
-                        "w",
-                    ) as f:
-                        for item in result:
-                            f.write("%s\n" % item)
-                except:
-                    # Stop spinner
-                    stop_spinner.set()
-                    spinner_thread.join()
-                    print("\nContact update error.")
-
-                # Process accounts
-                df["GDPR_Account__c"] = np.where(
-                    df["RecordTypeId"] == "012d0000000W68QAAS", 1, 0
-                )
-                print(
-                    f"Identified {df['GDPR_Account__c'].sum()} household account(s) to be flagged for deletion. (Setting `GDPR_Account__c` to true.)"
-                )
-
-                if df["GDPR_Account__c"].sum() > 0:
-
-                    # Drop columns
-                    df_accounts = df[["AccountId", "GDPR_Account__c"]]
-                    # Rename
-                    df_accounts = df_accounts.rename(
-                        columns={"AccountId": "Id"}, inplace=False
-                    )
-                    # Filter
-                    df_accounts = df_accounts.loc[df_accounts["GDPR_Account__c"] == 1]
-                    # Export
-                    print("Exporting to CSV.")
-                    df_accounts.to_csv(
-                        r"exports/flag_accounts_"
-                        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                        + ".csv",
-                        encoding="utf-8",
-                        index=False,
-                    )
-                    # Convert to lists of dicts
-                    target_data_accounts = df_accounts.to_dict("records")
-
-                    # Push account updates to SFDC
-                    try:
-                        # Start spinner
-                        stop_spinner = threading.Event()
-                        spinner_thread = threading.Thread(
-                            target=spin, args=(stop_spinner,)
-                        )
-
-                        print(
-                            "Pushing the GDPR flag update to household accounts in SFDC...",
-                            end="",
-                            flush=True,
-                        )
-                        spinner_thread.start()
-
-                        result = sf.bulk.Account.update(
-                            target_data_accounts, batch_size=500, use_serial=True
-                        )
-
-                        # Stop spinner
-                        stop_spinner.set()
-                        spinner_thread.join()
-                        print("\nDone!")
-
-                        # Print success count
-                        success_list = [
-                            1 if d["success"] is True else 0 for d in result
-                        ]
-                        success_emoji = (
-                            "✔️"
-                            if (len(success_list) - sum(success_list)) == 0
-                            else "💥"
-                        )
-                        print(
-                            "OK: "
-                            + str(sum(success_list))
-                            + ", Fail: "
-                            + str(len(success_list) - sum(success_list))
-                            + ". "
-                            + success_emoji
-                        )
-                        # Write result to file
-                        print("Exporting the results.")
-                        with open(
-                            r"results/results_flag_accounts_from_bulk_list_"
-                            + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-                            + ".txt",
-                            "w",
-                        ) as f:
-                            for item in result:
-                                f.write("%s\n" % item)
-                    except:
-                        # Stop spinner
-                        stop_spinner.set()
-                        spinner_thread.join()
-                        print("\nAccount update error.")
-
-    input("Task completed. 🚀 Press Enter to return to the main menu...")
+    console.print()
+    input("Task completed. 🚀  Press Enter to return to the main menu…")
 
 
 def delete_flagged_records(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN):
-    print("Deleting all flagged records...")
+    console.rule("[bold red]Delete Flagged Records[/bold red]")
 
-    # Pause
-    input("Next step: Connect to SFDC. Press Enter to continue...")
+    console.print(Panel(
+        "[bold red]WARNING[/bold red]\n"
+        "This will permanently delete all contacts and cases flagged with GDPR__c = true from Salesforce.\n"
+        "This action [bold]cannot be undone[/bold].",
+        border_style="red",
+    ))
 
-    # Initiate SFDC connection
-    sf = Salesforce(
-        username=SFDC_USERNAME, password=SFDC_PASSWORD, security_token=SFDC_TOKEN
-    )
+    questions = [
+        {
+            "type": "confirm",
+            "name": "confirmed",
+            "message": "Are you sure you want to proceed?",
+            "default": False,
+        }
+    ]
+    if not prompt(questions)["confirmed"]:
+        console.print("[yellow]Cancelled. Returning to the main menu.[/yellow]")
+        return
 
-    # Query cases
-    query = """
-    SELECT
-        Id
-    FROM CASE WHERE Contact.GDPR__c = true
-    """
+    sf = connect_to_sfdc(SFDC_USERNAME, SFDC_PASSWORD, SFDC_TOKEN)
 
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-    print(
-        "Querying all cases related to contacts flagged for deletion in SFDC...",
-        end="",
-        flush=True,
-    )
-    spinner_thread.start()
-
-    # Remove first and last line
-    query = "\n".join(query.split("\n")[1:-1])
-    # Run query
-    data = sf.query_all(query)
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # To dataframe
-    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
-    print(f"{df.shape[0]} case(s) found.")
-
-    # Export
-    print("Exporting to CSV.")
     os.makedirs("exports", exist_ok=True)
-    df.to_csv(
-        r"exports/gdpr_contact_cases_to_delete_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".csv",
-        encoding="utf-8",
-        index=False,
-    )
-
-    # Convert to lists of dicts
-    target_data_cases = df.to_dict("records")
-
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-
-    print("Deleting the cases in SFDC...", end="", flush=True)
-    spinner_thread.start()
-
-    # Push to SFDC
-    result = sf.bulk.Case.delete(target_data_cases, batch_size=500, use_serial=True)
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # Print success count
-    success_list = [1 if d["success"] is True else 0 for d in result]
-    success_emoji = "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-    print(
-        "OK: "
-        + str(sum(success_list))
-        + ", Fail: "
-        + str(len(success_list) - sum(success_list))
-        + ". "
-        + success_emoji
-    )
-
-    # Write result to file
-    print("Exporting the results.")
     os.makedirs("results", exist_ok=True)
-    with open(
-        r"results/results_gdpr_contact_cases_to_delete_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".txt",
-        "w",
-    ) as f:
-        for item in result:
-            f.write("%s\n" % item)
 
-    # Query contacts
-    query = """
-    SELECT
-        Id
-    FROM Contact WHERE GDPR__c = true
-    """
+    # ── Delete cases ──────────────────────────────────────────────────────────
+    console.rule("[dim]Cases[/dim]")
 
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
+    query = "SELECT Id FROM CASE WHERE Contact.GDPR__c = true"
+    data = run_query_with_spinner(sf, query, "Querying flagged cases")
 
-    print("Querying all contacts flagged for deletion in SFDC...", end="", flush=True)
-    spinner_thread.start()
-
-    # Remove first and last line
-    query = "\n".join(query.split("\n")[1:-1])
-    # Run query
-    data = sf.query_all(query)
-
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # To dataframe
     df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
-    print(f"{df.shape[0]} contact(s) found.")
+    console.print(f"  {df.shape[0]} case(s) found.")
 
-    # Export
-    print("Exporting to CSV.")
-    os.makedirs("exports", exist_ok=True)
-    df.to_csv(
-        r"exports/gdpr_contacts_to_delete_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".csv",
-        encoding="utf-8",
-        index=False,
+    ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+    cases_export = f"exports/gdpr_contact_cases_to_delete_{ts}.csv"
+    df.to_csv(cases_export, encoding="utf-8", index=False)
+    console.print(f"  [dim]Exported → {cases_export}[/dim]")
+
+    result = push_update_with_spinner(
+        sf.bulk.Case.delete,
+        df.to_dict("records"),
+        batch_size=500,
+        label="Deleting cases",
     )
+    ok, fail = print_result_summary(result, "cases")
+    write_results_file(result, f"results/results_gdpr_contact_cases_to_delete_{ts}.txt")
 
-    # Convert to lists of dicts
-    target_data_contacts = df.to_dict("records")
+    # ── Delete contacts ───────────────────────────────────────────────────────
+    console.rule("[dim]Contacts[/dim]")
 
-    # Start spinner
-    stop_spinner = threading.Event()
-    spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
+    query = "SELECT Id FROM Contact WHERE GDPR__c = true"
+    data = run_query_with_spinner(sf, query, "Querying flagged contacts")
 
-    print("Deleting the contacts in SFDC...", end="", flush=True)
-    spinner_thread.start()
+    df = pd.DataFrame(data["records"]).drop(["attributes"], axis=1, errors="ignore")
+    console.print(f"  {df.shape[0]} contact(s) found.")
 
-    # Push to SFDC
-    result = sf.bulk.Contact.delete(
-        target_data_contacts, batch_size=500, use_serial=True
+    ts = datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
+    contacts_export = f"exports/gdpr_contacts_to_delete_{ts}.csv"
+    df.to_csv(contacts_export, encoding="utf-8", index=False)
+    console.print(f"  [dim]Exported → {contacts_export}[/dim]")
+
+    result = push_update_with_spinner(
+        sf.bulk.Contact.delete,
+        df.to_dict("records"),
+        batch_size=500,
+        label="Deleting contacts",
     )
+    ok, fail = print_result_summary(result, "contacts")
+    write_results_file(result, f"results/results_gdpr_contacts_to_delete_{ts}.txt")
 
-    # Stop spinner
-    stop_spinner.set()
-    spinner_thread.join()
-    print("\nDone!")
-
-    # Print success count
-    success_list = [1 if d["success"] is True else 0 for d in result]
-    success_emoji = "✔️" if (len(success_list) - sum(success_list)) == 0 else "💥"
-    print(
-        "OK: "
-        + str(sum(success_list))
-        + ", Fail: "
-        + str(len(success_list) - sum(success_list))
-        + ". "
-        + success_emoji
-    )
-
-    # Write result to file
-    print("Exporting the results.")
-    os.makedirs("results", exist_ok=True)
-    with open(
-        r"results/results_gdpr_contacts_to_delete_"
-        + datetime.datetime.today().strftime("%Y-%m-%d-%H-%M-%S")
-        + ".txt",
-        "w",
-    ) as f:
-        for item in result:
-            f.write("%s\n" % item)
-
-    input("Task completed. 🚀 Press Enter to return to the main menu...")
+    console.print()
+    input("Task completed. 🚀  Press Enter to return to the main menu…")
 
 
 def spin(stop):
