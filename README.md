@@ -30,7 +30,7 @@ To run the script using Python directly, follow these steps:
 2. **Run the Script**: After installing the dependencies, you can run the Python script by executing the following command in the terminal:
 
    ```bash
-   python process-sfdc-data-removal-requests.py
+   python sfdc-data-removal-tool.py
    ```
 
 3. **Configure SFDC Credentials**: Make sure the `sfdc.ini` file is in the same folder as the script, containing the following format:
@@ -59,7 +59,7 @@ If you prefer to distribute or run the tool as an executable file, you can build
 2. **Build the Executable**: Run the following command to package the script into an executable:
 
    ```bash
-   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico --version-file=version_info.txt --noupx --console --clean --noconfirm process-sfdc-data-removal-requests.py
+   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico --version-file=version_info.txt --noupx --console --clean --noconfirm sfdc-data-removal-tool.py
    ```
 
    This will create a single executable file (`data-removal-tool-0.2.exe`) in the `dist` directory.
