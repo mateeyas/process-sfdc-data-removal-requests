@@ -12,3 +12,7 @@
 
 # Virtual environment directory
 .venv/
+
+# Python cache
+__pycache__/
+*.pyc
