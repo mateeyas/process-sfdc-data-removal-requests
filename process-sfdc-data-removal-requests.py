@@ -257,7 +257,7 @@ def connect_to_sfdc(username, password, token):
     """Connect to Salesforce and return the client, with a spinner."""
     stop_spinner = threading.Event()
     spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-    console.print("Connecting to Salesforce…", end="", flush=True)
+    console.print("Connecting to Salesforce…", end="")
     spinner_thread.start()
     try:
         sf = Salesforce(username=username, password=password, security_token=token)
@@ -272,7 +272,7 @@ def run_query_with_spinner(sf, query, label="Querying SFDC"):
     """Run a SOQL query with a spinner, return the result data."""
     stop_spinner = threading.Event()
     spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-    console.print(f"{label}…", end="", flush=True)
+    console.print(f"{label}…", end="")
     spinner_thread.start()
     try:
         data = sf.query_all(query)
@@ -287,7 +287,7 @@ def push_update_with_spinner(sf_bulk_op, records, batch_size, label="Pushing upd
     """Run a Salesforce bulk update/delete with a spinner, return the result."""
     stop_spinner = threading.Event()
     spinner_thread = threading.Thread(target=spin, args=(stop_spinner,))
-    console.print(f"{label}…", end="", flush=True)
+    console.print(f"{label}…", end="")
     spinner_thread.start()
     try:
         result = sf_bulk_op(records, batch_size=batch_size, use_serial=True)
