@@ -134,6 +134,11 @@ The application is safe to run and contains no malicious code.
 
 ## Version History
 
+- 0.8
+
+  - Fixed TypeError from unsupported `flush` on Rich `console.print`.
+  - Renamed the script to `sfdc-data-removal-tool.py` and updated README references.
+
 - 0.7
 
   - Improved UI with `rich` for coloured output, section headers, and summary banners.
