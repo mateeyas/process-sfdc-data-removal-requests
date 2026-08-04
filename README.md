@@ -59,10 +59,12 @@ If you prefer to distribute or run the tool as an executable file, you can build
 2. **Build the Executable**: Run the following command to package the script into an executable:
 
    ```bash
-   pyinstaller --onefile --name "data-removal-tool-0.x" --icon=rocket.ico --version-file=version_info.txt --noupx --console --clean --noconfirm sfdc-data-removal-tool.py
+   pyinstaller --onefile --name "sfdc-data-removal-tool-0.x" --icon=rocket.ico --version-file=version_info.txt --noupx --console --clean --noconfirm --collect-submodules=rich._unicode_data sfdc-data-removal-tool.py
    ```
 
-   This will create a single executable file (`data-removal-tool-0.2.exe`) in the `dist` directory.
+   `--collect-submodules=rich._unicode_data` is required for `rich>=14.3`, which loads unicode width tables via dynamic imports that PyInstaller cannot detect on its own.
+
+   This will create a single executable file (`sfdc-data-removal-tool-0.x.exe`) in the `dist` directory.
 
 3. **Prepare SFDC Credentials**: Ensure that the `sfdc.ini` file containing the Salesforce credentials is placed in the same directory as the executable:
 
@@ -106,12 +108,10 @@ When running the executable for the first time, Windows may display a security w
 **If Windows blocks the executable:**
 
 1. **Windows Defender SmartScreen Warning:**
-
    - Click "More info"
    - Click "Run anyway"
 
 2. **If the file is quarantined:**
-
    - Open Windows Security (Windows Defender)
    - Go to "Virus & threat protection"
    - Click "Protection history"
@@ -135,12 +135,10 @@ The application is safe to run and contains no malicious code.
 ## Version History
 
 - 0.8
-
   - Fixed TypeError from unsupported `flush` on Rich `console.print`.
   - Renamed the script to `sfdc-data-removal-tool.py` and updated README references.
 
 - 0.7
-
   - Improved UI with `rich` for coloured output, section headers, and summary banners.
   - Replaced bare `input()` file-format prompt with an InquirerPy list selector.
   - Added explicit confirmation step before deleting flagged records.
@@ -151,26 +149,22 @@ The application is safe to run and contains no malicious code.
   - Removed leftover debug `df.shape` calls.
 
 - 0.4
-
   - Disabled UPX compression to reduce antivirus false positives
   - Added version information to executable
   - Improved Windows compatibility
 
 - 0.3
-
   - Fixed the missing SFDC config parameter passing.
   - Added ASCII art.
   - Fixed emoji encoding issues.
 
 - 0.2
-
   - Added a simple user interface.
   - Improved the error handling.
   - Fixed the missing SFDC client initialization in the deletion task when the other tasks are skipped.
   - May contain bugs.
 
 - 0.1
-
   - Initial release.
   - May contain bugs.
 
